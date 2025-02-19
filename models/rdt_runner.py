@@ -88,6 +88,7 @@ class RDTRunner(
         if projector_type == 'linear':
             projector = nn.Linear(in_features, out_features)
         else:
+            # MLP Project
             mlp_gelu_match = re.match(r'^mlp(\d+)x_gelu$', projector_type)
             if mlp_gelu_match:
                 mlp_depth = int(mlp_gelu_match.group(1))

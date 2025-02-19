@@ -39,17 +39,21 @@ class RDT(nn.Module):
         super().__init__()
         self.horizon = horizon
         self.hidden_size = hidden_size
+        # Maximum number of language tokens
         self.max_lang_cond_len = max_lang_cond_len
+        # image condition length
         self.img_cond_len = img_cond_len
         self.dtype = dtype
         self.lang_pos_embed_config = lang_pos_embed_config
         self.img_pos_embed_config = img_pos_embed_config
 
+        # timesteps embedding
         self.t_embedder = TimestepEmbedder(hidden_size, dtype=dtype)
+        # frequency embedding
         self.freq_embedder = TimestepEmbedder(hidden_size, dtype=dtype)
         
         # We will use trainable sin-cos embeddings
-        # [timestep; state; action]
+        # [timestep; control_frequency; state; action]
         self.x_pos_embed = nn.Parameter(
             torch.zeros(1, horizon+3, hidden_size))
         # Language conditions
@@ -67,11 +71,17 @@ class RDT(nn.Module):
 
     def initialize_weights(self):
         # Initialize transformer layers:
+        # Define a basic initialization function for neural network modules
         def _basic_init(module):
+            # If the module is a Linear layer
             if isinstance(module, nn.Linear):
+                # Initialize weights using Xavier uniform initialization
                 torch.nn.init.xavier_uniform_(module.weight)
+                # If the layer has bias terms, initialize them to 0
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0)
+        
+        # Apply the initialization function to all modules in the model
         self.apply(_basic_init)
 
         # Initialize pos_embed by sin-cos embedding
@@ -140,13 +150,15 @@ class RDT(nn.Module):
         """
         t = self.t_embedder(t).unsqueeze(1)             # (B, 1, D) or (1, 1, D)
         freq = self.freq_embedder(freq).unsqueeze(1)    # (B, 1, D)
-        # Append timestep to the input tokens
+
+        # If t has batch size 1 (e.g. when using the same timestep for all samples),
+        # expand it to match the batch size of x for broadcasting
         if t.shape[0] == 1:
             t = t.expand(x.shape[0], -1, -1)
-        x = torch.cat([t, freq, x], dim=1)               # (B, T+1, D)
+        x = torch.cat([t, freq, x], dim=1)               # (B, T+2, D), 即(B, horizon + 3, D)
         
         # Add multimodal position embeddings
-        x = x + self.x_pos_embed
+        x = x + self.x_pos_embed                         # (B, T+2, D), 即(B, horizon + 3, D)
         # Note the lang is of variable length
         lang_c = lang_c + self.lang_cond_pos_embed[:, :lang_c.shape[1]]
         img_c = img_c + self.img_cond_pos_embed
@@ -155,11 +167,19 @@ class RDT(nn.Module):
         conds = [lang_c, img_c]
         masks = [lang_mask, img_mask]
         for i, block in enumerate(self.blocks):
+            # Alternate between language and image conditions for each block:
+            # - For even-numbered blocks (i%2 == 0), use language condition and mask
+            # - For odd-numbered blocks (i%2 == 1), use image condition and mask
             c, mask = conds[i%2], masks[i%2]
             x = block(x, c, mask)                       # (B, T+1, D)
         # Inject the language condition at the final layer
-        x = self.final_layer(x)                         # (B, T+1, out_channels)
+        # Pass through final layer to get output predictions
+        # Input shape: (B, T+2, D) where T+2 = horizon + 3 (timestep + freq + state + horizon actions)
+        # Output shape: (B, T+2, out_channels) where out_channels = action_dim
+        x = self.final_layer(x)                  
 
-        # Only preserve the action tokens
+        # Only preserve the action tokens by taking the last 'horizon' tokens
+        # This removes the timestep, frequency, and state tokens, leaving only predicted actions
+        # Output shape: (B, horizon, action_dim)
         x = x[:, -self.horizon:]
         return x

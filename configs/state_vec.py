@@ -112,3 +112,5 @@ STATE_VEC_IDX_MAPPING = {
     # [103, 128): reserved
 }
 STATE_VEC_LEN = 128
+
+print(STATE_VEC_IDX_MAPPING)

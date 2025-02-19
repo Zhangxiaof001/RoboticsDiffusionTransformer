@@ -82,5 +82,6 @@ class SiglipVisionTower(nn.Module):
 
     @property
     def num_patches(self):
+        # 计算的是将正方形图像分割成patch后的总数量
         return (self.config.image_size // self.config.patch_size) ** 2
 

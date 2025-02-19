@@ -49,18 +49,32 @@ class TimestepEmbedder(nn.Module):
         :return: an (N, D) Tensor of positional embeddings.
         """
         # https://github.com/openai/glide-text2im/blob/main/glide_text2im/nn.py
+        # 将维度对半分
         half = dim // 2
+        # 生成一系列频率，从高频到低频
         freqs = torch.exp(
             -math.log(max_period) * torch.arange(
                 start=0, end=half, dtype=torch.float32, device=t.device) / half
         )
+        # 将时间步长t与不同频率相乘
         args = t[:, None].float() * freqs[None]
+        # 使用sin和cos函数生成最终的编码
         embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
         if dim % 2:
             embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
         return embedding.to(self.dtype)
 
     def forward(self, t):
+        """
+        Forward pass of Timesteps Embedder.
+        特征编码，目的是将这些标量值转换为有意义的高维表示
+        
+        Args:
+            t (_type_): t: (B,) or (1,), diffusion timesteps.
+            
+        return: 
+            shape: (B, hidden_size) or (1, hidden_size)
+        """
         t_freq = self.timestep_embedding(t, self.frequency_embedding_size)
         t_emb = self.mlp(t_freq)
         return t_emb
@@ -101,19 +115,58 @@ class CrossAttention(nn.Module):
     
     def forward(self, x: torch.Tensor, c: torch.Tensor, 
                 mask: torch.Tensor | None = None) -> torch.Tensor:
-        B, N, C = x.shape
-        _, L, _ = c.shape
+        """
+        Forward pass of CrossAttention.
+        Args:
+            x (torch.Tensor): (B, horizon + 3, D)
+            c (torch.Tensor): image or language, (B, L_lang, D) or (B, L_img, D) or None, 
+                language condition tokens (variable length).
+            mask : image_mask or language_mask, (B, L_lang) or (B, L_img), Defaults to None.
+
+        Returns:
+            torch.Tensor: (B, horizon + 3, D)
+        """
+        B, N, C = x.shape  # B:批次大小, N:序列长度, C:隐藏维度
+        _, L, _ = c.shape  # L:条件序列长度
+        # 生成Q,K,V
+        
+        # 1. Apply linear projection to input x to get query vectors
+        #    self.q(x): (B, N, D) -> (B, N, D)
+        # 2. Reshape query vectors to separate heads:
+        #    reshape(B, N, self.num_heads, self.head_dim): (B, N, D) -> (B, N, num_heads, head_dim)
+        #    where D = num_heads * head_dim
+        # 3. Permute dimensions to prepare for attention computation:
+        #    permute(0, 2, 1, 3): (B, N, num_heads, head_dim) -> (B, num_heads, N, head_dim)
+        #    This puts the head dimension last and groups queries by head
         q = self.q(x).reshape(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        
+        # 1. Apply linear projection to condition c to get key-value pairs
+        #    self.kv(c): (B, L, D) -> (B, L, 2*D) where 2*D is for both keys and values
+        # 2. Reshape to separate heads and key/value components:
+        #    reshape(B, L, 2, num_heads, head_dim): (B, L, 2*D) -> (B, L, 2, num_heads, head_dim)
+        # 3. Permute dimensions to group by key/value, batch, heads:
+        #    permute(2, 0, 3, 1, 4): (B, L, 2, num_heads, head_dim) -> (2, B, num_heads, L, head_dim)
+        # 4. Split into separate key and value tensors:
+        #    unbind(0): (2, B, num_heads, L, head_dim) -> (B, num_heads, L, head_dim) for both k and v
+        # 5. Apply normalization to query and key vectors
         kv = self.kv(c).reshape(B, L, 2, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         k, v = kv.unbind(0)
         q, k = self.q_norm(q), self.k_norm(k)
 
         # Prepare attn mask (B, L) to mask the conditioion
         if mask is not None:
+            # Reshape the mask from (B, L) to (B, 1, 1, L) to prepare for broadcasting
+            # This adds two singleton dimensions for batch and sequence length
             mask = mask.reshape(B, 1, 1, L)
-            mask = mask.expand(-1, -1, N, -1)
+            
+            # Expand the mask to match the attention matrix dimensions (B, num_heads, N, L)
+            # -1 means keep that dimension's size unchanged
+            # This creates a mask that can be applied to all attention heads and query positions
+            mask = mask.expand(-1, -1, N, -1)   # (B, 1, N, L)
         
+        # 注意力计算
         if self.fused_attn:
+            # 使用PyTorch优化的注意力实现
             x = F.scaled_dot_product_attention(
                 query=q,
                 key=k,
@@ -122,6 +175,7 @@ class CrossAttention(nn.Module):
                 attn_mask=mask
             )
         else:
+            # 手动实现注意力机制
             q = q * self.scale
             attn = q @ k.transpose(-2, -1)
             if mask is not None:
@@ -130,8 +184,10 @@ class CrossAttention(nn.Module):
             if self.attn_drop.p > 0:
                 attn = self.attn_drop(attn)
             x = attn @ v
-            
+        
+        # 重整形状并进行最后的投影
         x = x.permute(0, 2, 1, 3).reshape(B, N, C)
+        # 线性投影
         x = self.proj(x)
         if self.proj_drop.p > 0:
             x = self.proj_drop(x)
@@ -159,26 +215,43 @@ class RDTBlock(nn.Module):
         
         self.norm2 = RmsNorm(hidden_size, eps=1e-6)
         approx_gelu = lambda: nn.GELU(approximate="tanh")
+        # feed forward network
         self.ffn = Mlp(in_features=hidden_size, 
             hidden_features=hidden_size, 
             act_layer=approx_gelu, drop=0)
         self.norm3 = RmsNorm(hidden_size, eps=1e-6)
 
     def forward(self, x, c, mask=None):
+        """
+        Forward pass of RDTBlock.
+
+        Args:
+            x: (B, horizon + 3, D), timesteps + ctrl_frequency + state + action token sequence,
+                dimension D is assumed to be the same as the hidden size.
+            c (image or language)): (B, L_lang, D) or (B, L_img, D) or None, language condition tokens (variable length).
+            
+            mask (image_mask or language_mask): (B, L_lang) or (B, L_img) or None, Defaults to None.
+
+        Returns:
+            x: (B, horizon + 3, D)
+        """
+        # 1. Self-Attention层
         origin_x = x
-        x = self.norm1(x)
-        x = self.attn(x)
-        x = x + origin_x
+        x = self.norm1(x)  # RMS归一化
+        x = self.attn(x)   # self-attention
+        x = x + origin_x   # 残差连接
         
+        # 2. Cross-Attention层
         origin_x = x
-        x = self.norm2(x)
-        x = self.cross_attn(x, c, mask)
-        x = x + origin_x
-                
+        x = self.norm2(x)  # RMS归一化
+        x = self.cross_attn(x, c, mask)  # cross-attention
+        x = x + origin_x   # 残差连接
+           
+        # 3. FFN层     
         origin_x = x
-        x = self.norm3(x)
-        x = self.ffn(x)
-        x = x + origin_x
+        x = self.norm3(x)  # RMS归一化
+        x = self.ffn(x)    # 前馈网络 MLP
+        x = x + origin_x   # (B, horizon + 3, D)
         
         return x
 
@@ -197,8 +270,20 @@ class FinalLayer(nn.Module):
             act_layer=approx_gelu, drop=0)
 
     def forward(self, x):
+        """
+        Forward pass of FinalLayer, output last action chunking.
+
+        Args:
+            x : (B, T+2, D), D is the same as hidden_size.
+
+        Returns:
+            x: (B, T+2, out_channels)
+        """
+        # layer norm
         x = self.norm_final(x)
+        # MLP
         x = self.ffn_final(x)
+        # x: (B, out_channels)
         return x
 
 
@@ -288,6 +373,7 @@ def get_multimodal_cond_pos_embed(embed_dim, mm_cond_lens: OrderedDict,
     for idx, (modality, cond_len) in enumerate(mm_cond_lens.items()):
         if modality == "image" and \
             (isinstance(cond_len, tuple) or isinstance(cond_len, list)):
+            # 处理图像模态 (2D或更高维网格)
             all_grid_sizes = tuple([abs(x) for x in cond_len])
             embed_grid_sizes = tuple([x if x > 0 else 1 for x in cond_len])
             cond_sincos_embed = get_nd_sincos_pos_embed_from_grid(
@@ -296,6 +382,7 @@ def get_multimodal_cond_pos_embed(embed_dim, mm_cond_lens: OrderedDict,
             cond_pos_embed[..., -pos_embed_dim:] += cond_sincos_embed
             cond_pos_embed = cond_pos_embed.reshape((-1, embed_dim))
         else:
+            # 处理其他模态 (1D序列)
             cond_sincos_embed = get_1d_sincos_pos_embed_from_grid(
                 pos_embed_dim, torch.arange(cond_len if cond_len > 0 else 1))
             cond_pos_embed = np.zeros((abs(cond_len), embed_dim))

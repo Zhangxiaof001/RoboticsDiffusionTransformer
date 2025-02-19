@@ -287,7 +287,13 @@ def parse_args(input_args=None):
     else:
         args = parser.parse_args()
 
+    # Get the local rank from environment variable (used in distributed training)
+    # Default to -1 if not set, meaning not in distributed training
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
+    
+    # If environment local rank is set and differs from the command line argument,
+    # update the local rank in args to match the environment variable
+    # This ensures consistency between environment settings and command line arguments
     if env_local_rank != -1 and env_local_rank != args.local_rank:
         args.local_rank = env_local_rank
 

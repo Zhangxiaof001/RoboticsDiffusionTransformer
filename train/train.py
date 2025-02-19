@@ -131,6 +131,7 @@ def train(args, logger):
     elif accelerator.mixed_precision == "bf16":
         weight_dtype = torch.bfloat16
     
+    # Text Embedding
     if args.precomp_lang_embed:
         tokenizer, text_encoder = None, None
     else:
@@ -138,6 +139,7 @@ def train(args, logger):
                                 model_max_length=config["dataset"]["tokenizer_max_length"], device=accelerator.device)
         tokenizer, text_encoder = text_embedder.tokenizer, text_embedder.model
 
+    # Image Embedding
     vision_encoder = SiglipVisionTower(vision_tower=args.pretrained_vision_encoder_name_or_path, args=None)
     image_processor = vision_encoder.image_processor
 
