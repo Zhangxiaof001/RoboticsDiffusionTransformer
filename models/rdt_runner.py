@@ -107,7 +107,7 @@ class RDTRunner(
         '''
         lang_tokens: (batch_size, lang_len, lang_token_dim)
         img_tokens: (batch_size, img_len, img_token_dim)
-        state_tokens: (batch_size, state_len, state_token_dim)
+        state_tokens: (batch_size, state_len, state_token_dim * 2)
         
         return: adpated (..., hidden_size) for all input tokens
         '''
@@ -182,6 +182,7 @@ class RDTRunner(
         device = lang_tokens.device  
 
         # Sample noise that we'll add to the actions
+        # 生成符合标准正态分布(均值为0, 标准差为1)的随机数
         noise = torch.randn(
             action_gt.shape, dtype=action_gt.dtype, device=device
         )
@@ -196,14 +197,18 @@ class RDTRunner(
             action_gt, noise, timesteps)
         
         # Concatenate the state and action tokens to form the input sequence
-        state_action_traj = torch.cat([state_tokens, noisy_action], dim=1)
+        state_action_traj = torch.cat([state_tokens, noisy_action], dim=1)     #（batch_size, horizon+1, state_token_dim)  
         # Append the action mask to the input sequence
-        action_mask = action_mask.expand(-1, state_action_traj.shape[1], -1)
-        state_action_traj = torch.cat([state_action_traj, action_mask], dim=2)
+        action_mask = action_mask.expand(-1, state_action_traj.shape[1], -1)   # (batch_size, horizon+1, state_token_dim)
+        state_action_traj = torch.cat([state_action_traj, action_mask], dim=2) # (batch_size, horizon+1, state_token_dim * 2)
         # Align the dimension with the hidden size
+        # state_action_traj维度变为: (batch_size, horizon + 1, hidden_size)
+        # lang_cond维度: (batch_size, lang_len, hidden_size)
+        # img_cond维度: (batch_size, img_len, hidden_size)
         lang_cond, img_cond, state_action_traj = self.adapt_conditions(
             lang_tokens, img_tokens, state_action_traj)
         # Predict the denoised result
+        # (batch_size, horizon, state_token_dim)
         pred = self.model(state_action_traj, ctrl_freqs, 
                           timesteps, lang_cond, img_cond, 
                           lang_mask=lang_attn_mask)
