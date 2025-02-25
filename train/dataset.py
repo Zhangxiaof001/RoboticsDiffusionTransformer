@@ -124,8 +124,10 @@ class VLAConsumerDataset(Dataset):
         self.cam_ext_mask_prob = cam_ext_mask_prob
         self.use_hdf5 = use_hdf5
         self.hdf5_dataset = None
+        # 是否直接加载hdf5文件数据集
         if use_hdf5:
             self.hdf5_dataset = HDF5VLADataset()
+        # 是否提前使用language encoder
         self.use_precomp_lang_embed = use_precomp_lang_embed
         if use_precomp_lang_embed:
             self.empty_lang_embed = torch.load("data/empty_lang_embed.pt")

@@ -21,6 +21,7 @@ class HDF5VLADataset:
         HDF5_DIR = "data/datasets/agilex/rdt_data/"
         self.DATASET_NAME = "agilex"
         
+        # 存储所有.hdf5后缀的文件路径
         self.file_paths = []
         for root, _, files in os.walk(HDF5_DIR):
             for filename in fnmatch.filter(files, '*.hdf5'):
@@ -40,6 +41,7 @@ class HDF5VLADataset:
             valid, res = self.parse_hdf5_file_state_only(file_path)
             _len = res['state'].shape[0] if valid else 0
             episode_lens.append(_len)
+        # 权重数组, 代表每个episode的采样概率
         self.episode_sample_weights = np.array(episode_lens) / np.sum(episode_lens)
     
     def __len__(self):
@@ -63,6 +65,7 @@ class HDF5VLADataset:
         """
         while True:
             if index is None:
+                # 权重越大, 对应的episode被采样的概率越高
                 file_path = np.random.choice(self.file_paths, p=self.episode_sample_weights)
             else:
                 file_path = self.file_paths[index]
@@ -113,6 +116,7 @@ class HDF5VLADataset:
                 } or None if the episode is invalid.
         """
         with h5py.File(file_path, 'r') as f:
+            # joint position
             qpos = f['observations']['qpos'][:]
             num_steps = qpos.shape[0]
             # [Optional] We drop too-short episode
@@ -134,6 +138,7 @@ class HDF5VLADataset:
             
             # Load the instruction
             dir_path = os.path.dirname(file_path)
+            # instruction text存储在expanded_instruction_gpt-4-turbo.json中
             with open(os.path.join(dir_path, 'expanded_instruction_gpt-4-turbo.json'), 'r') as f_instr:
                 instruction_dict = json.load(f_instr)
             # We have 1/3 prob to use original instruction,
@@ -142,6 +147,7 @@ class HDF5VLADataset:
             instruction_type = np.random.choice([
                 'instruction', 'simplified_instruction', 'expanded_instruction'])
             instruction = instruction_dict[instruction_type]
+            # 可能会存在多个instruction
             if isinstance(instruction, list):
                 instruction = np.random.choice(instruction)
             # You can also use precomputed language embeddings (recommended)
@@ -193,7 +199,7 @@ class HDF5VLADataset:
                 uni_vec[..., UNI_STATE_INDICES] = values
                 return uni_vec
             state = fill_in_state(state)
-            state_indicator = fill_in_state(np.ones_like(state_std))
+            state_indicator = fill_in_state(np.ones_like(state_std))  # state mask, valid is 1
             state_std = fill_in_state(state_std)
             state_mean = fill_in_state(state_mean)
             state_norm = fill_in_state(state_norm)
@@ -207,6 +213,7 @@ class HDF5VLADataset:
                 for i in range(max(step_id-self.IMG_HISORY_SIZE+1, 0), step_id+1):
                     img = f['observations']['images'][key][i]
                     imgs.append(cv2.imdecode(np.frombuffer(img, np.uint8), cv2.IMREAD_COLOR))
+                # Converts list of HxWxC arrays to (N,H,W,C) array where N is number of images
                 imgs = np.stack(imgs)
                 if imgs.shape[0] < self.IMG_HISORY_SIZE:
                     # Pad the images using the first image
@@ -263,6 +270,7 @@ class HDF5VLADataset:
                 } or None if the episode is invalid.
         """
         with h5py.File(file_path, 'r') as f:
+            # joint position
             qpos = f['observations']['qpos'][:]
             num_steps = qpos.shape[0]
             # [Optional] We drop too-short episode
@@ -304,6 +312,7 @@ class HDF5VLADataset:
                 ] + [
                     STATE_VEC_IDX_MAPPING["right_gripper_open"]
                 ]
+                # 非填充位设为0
                 uni_vec = np.zeros(values.shape[:-1] + (self.STATE_DIM,))
                 uni_vec[..., UNI_STATE_INDICES] = values
                 return uni_vec
